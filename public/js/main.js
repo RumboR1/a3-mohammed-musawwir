@@ -1,47 +1,71 @@
-// FRONT-END (CLIENT) JAVASCRIPT HERE
-
-// null means we're adding a new poem; a real id means we're editing that poem
+// null means adding and a real id means editing 
 let editingId = null
 
-const submit = async function( event ) {
+let submit = async function( event ) {
   // stop form submission from trying to load
   // a new .html page for displaying results...
   // this was the original browser behavior and still
   // remains to this day
   event.preventDefault()
 
-  const authorInput = document.querySelector( '#author' ),
-        titleInput   = document.querySelector( '#title' ),
-        maqamsInput  = document.querySelector( '#maqams' ),
-        yearInput    = document.querySelector( '#birthYear' )
+  let authorInput    = document.querySelector( '#author' ),
+      titleInput     = document.querySelector( '#title' ),
+      notesInput     = document.querySelector( '#notes' ),
+      yearInput      = document.querySelector( '#birthYear' ),
+      statusMessage  = document.querySelector( '#status' )
 
-  const maqams = maqamsInput.value
-          .split( ',' )
-          .map( function( m ) { return m.trim() } )
-          .filter( function( m ) { return m.length > 0 } )
+  let maqams = []
+  let maqamBoxes = document.getElementsByName( 'maqam' )
+  for( let i = 0; i < maqamBoxes.length; i++ ) {
+    if( maqamBoxes[ i ].checked ) {
+      maqams.push( maqamBoxes[ i ].value )
+    }
+  }
 
-  const json = {
+  if( maqams.length === 0 ) {
+    statusMessage.textContent = 'Please check at least one maqam.'
+    return
+  }
+
+  let poemForm = ''
+  let formRadios = document.getElementsByName( 'poemForm' )
+  for( let i = 0; i < formRadios.length; i++ ) {
+    if( formRadios[ i ].checked ) {
+      poemForm = formRadios[ i ].value
+    }
+  }
+
+  let json = {
           author: authorInput.value,
           title: titleInput.value,
+          form: poemForm,
           maqams: maqams,
+          notes: notesInput.value,
           birthYear: yearInput.value
         }
 
   // if we're editing an existing poem, include its id and hit /edit instead
-  const url = editingId ? '/edit' : '/submit'
+  let url = editingId ? '/edit' : '/submit'
   if( editingId ) {
     json.id = editingId
   }
 
-  const response = await fetch( url, {
+  let response = await fetch( url, {
     method:'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify( json )
   })
 
-  const data = await response.json()
+  if( response.status === 401 ) {
+    statusMessage.textContent = 'Please log in with GitHub to save poems.'
+    return
+  }
+
+  let data = await response.json()
 
   showPoems( data )
   document.querySelector( '#poem-form' ).reset()
+  statusMessage.textContent = editingId ? 'Poem updated.' : 'Poem added.'
 
   // back to "add" mode
   editingId = null
@@ -49,86 +73,114 @@ const submit = async function( event ) {
 }
 
 // builds the results table from the array of poems the server sends back
-const showPoems = function( data ) {
-  const tbody = document.querySelector( '#poem-rows' )
+let showPoems = function( data ) {
+  let tbody = document.querySelector( '#poem-rows' )
   tbody.innerHTML = ''
 
   data.forEach( function( poem ) {
-    const row = document.createElement( 'tr' )
+    let row = document.createElement( 'tr' )
 
     row.innerHTML = `
       <td>${poem.author}</td>
       <td>${poem.title}</td>
+      <td>${poem.form}</td>
       <td>${poem.maqams.join( ', ' )}</td>
       <td>${poem.era}</td>
       <td>${poem.mood}</td>
       <td>${poem.multiMaqam ? 'Yes' : 'No'}</td>
+      <td>${poem.notes}</td>
       <td>
-        <button class="edit-button" data-id="${poem.id}">Edit</button>
-        <button class="delete-button" data-id="${poem.id}">Delete</button>
+        <button class="edit-button" data-id="${poem._id}" aria-label="Edit ${poem.title}">Edit</button>
+        <button class="delete-button" data-id="${poem._id}" aria-label="Delete ${poem.title}">Delete</button>
       </td>
     `
 
     tbody.appendChild( row )
   })
 
-  const deleteButtons = document.querySelectorAll( '.delete-button' )
+  let deleteButtons = document.querySelectorAll( '.delete-button' )
 
   deleteButtons.forEach( function( button ) {
     button.onclick = function() {
-      deletePoem( Number( button.dataset.id ) )
+      deletePoem( button.dataset.id )
     }
   })
 
-  const editButtons = document.querySelectorAll( '.edit-button' )
+  let editButtons = document.querySelectorAll( '.edit-button' )
 
   editButtons.forEach( function( button ) {
     button.onclick = function() {
-      const id = Number( button.dataset.id )
+      let id = button.dataset.id
       startEdit( id, data )
     }
   })
 }
 
 // fills the form with an existing poem's values so it can be edited
-const startEdit = function( id, data ) {
-  const poem = data.find( function( p ) { return p.id === id } )
+let startEdit = function( id, data ) {
+  let poem = data.find( function( p ) { return p._id === id } )
 
   document.querySelector( '#author' ).value = poem.author
   document.querySelector( '#title' ).value = poem.title
-  document.querySelector( '#maqams' ).value = poem.maqams.join( ', ' )
+  document.querySelector( '#notes' ).value = poem.notes
   document.querySelector( '#birthYear' ).value = poem.birthYear
+
+  let formRadios = document.getElementsByName( 'poemForm' )
+  for( let i = 0; i < formRadios.length; i++ ) {
+    formRadios[ i ].checked = formRadios[ i ].value === poem.form
+  }
+
+  let maqamBoxes = document.getElementsByName( 'maqam' )
+  for( let i = 0; i < maqamBoxes.length; i++ ) {
+    maqamBoxes[ i ].checked = poem.maqams.includes( maqamBoxes[ i ].value )
+  }
 
   editingId = id
   document.querySelector( '#poem-form button' ).textContent = 'Save Changes'
+  document.querySelector( '#author' ).focus()
 }
 
-// same idea as submit above, but hits /delete instead of /submit
-const deletePoem = async function( id ) {
-  const json = { id },
-        body = JSON.stringify( json )
+// similar to submit  but hits /delete instead of /submit
+let deletePoem = async function( id ) {
+  if( !confirm( 'Delete this poem? This cannot be undone.' ) ) {
+    return
+  }
 
-  const response = await fetch( '/delete', {
+  let json = { id },
+      body = JSON.stringify( json )
+
+  let response = await fetch( '/delete', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body
   })
 
-  const data = await response.json()
+  let data = await response.json()
 
   showPoems( data )
+  document.querySelector( '#status' ).textContent = 'Poem deleted.'
 }
 
 // loads whatever poems are already on the server when the page first opens
-const loadPoems = async function() {
-  const response = await fetch( '/data' )
-  const data = await response.json()
+let loadPoems = async function() {
+  let response = await fetch( '/data' )
+  let data = await response.json()
 
+  if( data === null ) {
+    return
+  }
+
+  document.querySelector( '#login-box' ).hidden = true
   showPoems( data )
 }
 
 window.onload = function() {
-  const button = document.querySelector('button')
-  button.onclick = submit
+  let form = document.querySelector( '#poem-form' )
+  form.onsubmit = submit
+
+  if( window.location.search === '?new' ) {
+    alert( 'This is your first time logging in, so a new account was created for your GitHub username.' )
+  }
 
   loadPoems()
 }

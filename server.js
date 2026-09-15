@@ -1,21 +1,47 @@
-const http = require( 'http' ),
-      fs   = require( 'fs' ),
-      // IMPORTANT: you must run `npm install` in the directory for this assignment
-      // to install the mime library if you're testing this on your local machine.
-      // On Render, make sure `npm install` is your build command.
-      mime = require( 'mime' ),
-      dir  = 'public/',
-      port = 3000
+let express = require( 'express' ),
+    cookieSession = require( 'cookie-session' ),
+    passport = require( 'passport' ),
+    GitHubStrategy = require( 'passport-github2' ).Strategy,
+    helmet = require( 'helmet' ),
+    compression = require( 'compression' ),
+    morgan = require( 'morgan' ),
+    { MongoClient, ObjectId } = require( 'mongodb' ),
+    port = 3000
 
-var appdata = [
-  { id: 1, author: 'Al-Busiri', title: 'The Mantle Ode', maqams: [ 'Bayati', 'Hijaz', 'Nahawand' ], birthYear: 1212 },
-  { id: 2, author: 'Nizar Qabbani', title: 'Bread, Hashish and Moon', maqams: [ 'Rast' ], birthYear: 1923 },
-  { id: 3, author: 'Mahmoud Darwish', title: 'Identity Card', maqams: [ 'Saba' ], birthYear: 1941 }
+require( 'dotenv' ).config()
+
+let app = express()
+
+app.use( helmet() )
+app.use( compression() )
+app.use( morgan( 'tiny' ) )
+
+app.use( cookieSession({
+  name: 'session',
+  keys: [ process.env.SESSION_SECRET ]
+}))
+
+app.use( express.json() )
+app.use( passport.initialize() )
+
+passport.use( new GitHubStrategy({
+    clientID: process.env.GITHUB_CLIENT_ID,
+    clientSecret: process.env.GITHUB_CLIENT_SECRET,
+    callbackURL: '/auth/github/callback',
+    proxy: true
+  },
+  function( accessToken, refreshToken, profile, done ) {
+    done( null, { username: profile.username } )
+  }
+))
+
+let startingPoems = [
+  { author: 'Al-Busiri', title: 'The Mantle Ode', form: 'Qasida', maqams: [ 'Bayati', 'Hijaz', 'Nahawand' ], notes: '', birthYear: 1212 },
+  { author: 'Nizar Qabbani', title: 'Bread, Hashish and Moon', form: 'Free verse', maqams: [ 'Rast' ], notes: '', birthYear: 1923 },
+  { author: 'Mahmoud Darwish', title: 'Identity Card', form: 'Free verse', maqams: [ 'Saba' ], notes: '', birthYear: 1941 }
 ]
 
-var nextId = 4
- 
-var moodByMaqam = {
+let moodByMaqam = {
   rast: 'Proud and powerful',
   bayati: 'Powerful and serious',
   hijaz: 'Mysterious and yearning',
@@ -28,125 +54,145 @@ var moodByMaqam = {
 }
 
 function getMood(maqam) {
-  var m = maqam.toLowerCase()
-  var mood = moodByMaqam[ m ]
+  let m = maqam.toLowerCase()
+  let mood = moodByMaqam[ m ]
 
   if (mood) {
     return mood
   }
 
-  else { 
+  else {
     return 'Unclassified'
   }
 }
 
 function addDerivedFields( poem ) {
   poem.era = poem.birthYear >= 1800 ? 'Modern' : 'Classical'
-  poem.mood = poem.maqams.map(function (maqam) { 
+  poem.mood = poem.maqams.map(function (maqam) {
     return getMood(maqam)}).join('/');
   poem.multiMaqam = poem.maqams.length > 1
 
   return poem
 }
 
-// add the derived fields to the starting poems
-for( var i = 0; i < appdata.length; i++ ) {
-  appdata[ i ] = addDerivedFields( appdata[ i ] )
-}
+let client = new MongoClient( process.env.MONGODB_URI )
+let poems
+let users
 
-const server = http.createServer( function( request,response ) {
-  if( request.method === 'GET' ) {
-    handleGet( request, response )    
-  }else if( request.method === 'POST' ){
-    handlePost( request, response ) 
+app.use( express.static( 'public' ) )
+
+app.get( '/auth/github', passport.authenticate( 'github', { session: false } ) )
+
+app.get( '/auth/github/callback', passport.authenticate( 'github', { session: false, failureRedirect: '/' } ), async function( request, response ) {
+  let username = request.user.username
+  request.session.username = username
+
+  let user = await users.findOne( { username: username } )
+
+  if( user === null ) {
+    await users.insertOne( { username: username } )
+
+    for( let i = 0; i < startingPoems.length; i++ ) {
+      let newPoem = {
+        username: username,
+        author: startingPoems[ i ].author,
+        title: startingPoems[ i ].title,
+        form: startingPoems[ i ].form,
+        maqams: startingPoems[ i ].maqams,
+        notes: startingPoems[ i ].notes,
+        birthYear: startingPoems[ i ].birthYear
+      }
+
+      newPoem = addDerivedFields( newPoem )
+      await poems.insertOne( newPoem )
+    }
+
+    response.redirect( '/?new' )
+  }else{
+    response.redirect( '/' )
   }
 })
 
-const handleGet = function( request, response ) {
-
-  // send back the list of poems as json
-  if( request.url === '/data' ) {
-    response.writeHead( 200, { 'Content-Type': 'application/json' })
-    response.end( JSON.stringify( appdata ) )
-    return
-  }
-
-  const filename = dir + request.url.slice( 1 ) 
-
-  if( request.url === '/' ) {
-    sendFile( response, 'public/index.html' )
+let checkLogin = function( request, response, next ) {
+  if( request.session.username ) {
+    next()
   }else{
-    sendFile( response, filename )
+    response.status( 401 ).json( { error: 'Not logged in' } )
   }
 }
 
-const handlePost = function( request, response ) {
-  let dataString = ''
-
-  request.on( 'data', function( data ) {
-      dataString += data 
-  })
-
-  request.on( 'end', function() {
-    const body = JSON.parse( dataString )
-
-    if( request.url === '/submit' ) {
-      let newPoem = {
-        id: nextId,
-        author: body.author,
-        title: body.title,
-        maqams: body.maqams,
-        birthYear: Number( body.birthYear )
-      }
-
-      nextId = nextId + 1
-      newPoem = addDerivedFields( newPoem )
-      appdata.push( newPoem )
-    }
-
-    if( request.url === '/delete' ) {
-      appdata = appdata.filter( function( poem ) {
-        return poem.id !== body.id
-      })
-    }
-
-    if ( request.url === '/edit' ) {
-      for( var i = 0; i < appdata.length; i++ ) {
-        if( appdata[ i ].id === body.id ) {
-          appdata[ i ].author = body.author
-          appdata[ i ].title = body.title
-          appdata[ i ].maqams = body.maqams
-          appdata[ i ].birthYear = Number( body.birthYear )
-          appdata[ i ] = addDerivedFields( appdata[ i ] )
-        }
-      }
-    }
-
-    response.writeHead( 200, { 'Content-Type': 'application/json' })
-    response.end( JSON.stringify( appdata ) )
-  })
+// send back the list of poems as json
+let sendPoems = async function( request, response ) {
+  let data = await poems.find( { username: request.session.username } ).toArray()
+  response.json( data )
 }
 
-const sendFile = function( response, filename ) {
-   const type = mime.getType( filename ) 
+app.get( '/data', async function( request, response ) {
+  if( request.session.username ) {
+    await sendPoems( request, response )
+  }else{
+    response.json( null )
+  }
+})
 
-   fs.readFile( filename, function( err, content ) {
+app.post( '/submit', checkLogin, async function( request, response ) {
+  let body = request.body
 
-     // if the error = null, then we've loaded the file successfully
-     if( err === null ) {
+  let newPoem = {
+    username: request.session.username,
+    author: body.author,
+    title: body.title,
+    form: body.form,
+    maqams: body.maqams,
+    notes: body.notes,
+    birthYear: Number( body.birthYear )
+  }
 
-       // status code: https://httpstatuses.com
-       response.writeHeader( 200, { 'Content-Type': type })
-       response.end( content )
+  newPoem = addDerivedFields( newPoem )
+  await poems.insertOne( newPoem )
 
-     }else{
+  await sendPoems( request, response )
+})
 
-       // file not found, error code 404
-       response.writeHeader( 404 )
-       response.end( '404 Error: File Not Found' )
+app.post( '/delete', checkLogin, async function( request, response ) {
+  let body = request.body
 
-     }
-   })
+  await poems.deleteOne( { _id: new ObjectId( body.id ), username: request.session.username } )
+
+  await sendPoems( request, response )
+})
+
+app.post( '/edit', checkLogin, async function( request, response ) {
+  let body = request.body
+
+  let updatedPoem = {
+    username: request.session.username,
+    author: body.author,
+    title: body.title,
+    form: body.form,
+    maqams: body.maqams,
+    notes: body.notes,
+    birthYear: Number( body.birthYear )
+  }
+
+  updatedPoem = addDerivedFields( updatedPoem )
+
+  await poems.updateOne(
+    { _id: new ObjectId( body.id ), username: request.session.username },
+    { $set: updatedPoem }
+  )
+
+  await sendPoems( request, response )
+})
+
+async function start() {
+  await client.connect()
+
+  let db = client.db( 'poetryApp' )
+  poems = db.collection( 'poems' )
+  users = db.collection( 'users' )
+
+  app.listen( process.env.PORT || port )
 }
 
-server.listen( process.env.PORT || port )
+start()
